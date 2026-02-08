@@ -1,0 +1,21 @@
+{
+  "name": "eth-wallet-generator",
+  "version": "1.0.0",
+  "description": "ETH Wallet Generator with vanity address support",
+  "main": "eth-wallet-generator.js",
+  "scripts": {
+    "start": "node eth-wallet-generator.js",
+    "test": "node test-generator.js"
+  },
+  "keywords": [
+    "ethereum",
+    "wallet",
+    "vanity",
+    "generator"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.9.0"
+  }
+}
