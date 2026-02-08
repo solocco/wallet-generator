@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * ETH Wallet Generator (Node.js) - Professional Edition
- * Generate Ethereum wallets with advanced features
+ * Multi-Chain Wallet Generator (Node.js) - Professional Edition
+ * Generate Ethereum & Solana wallets with advanced features
  * 
  * Required modules:
  * - npm install ethers
+ * - npm install @solana/web3.js
+ * - npm install bip39
+ * - npm install ed25519-hd-key (for Solana mnemonic derivation)
  * 
  * Usage: node eth-wallet-generator-enhanced.js
  */
@@ -14,6 +17,22 @@ const { performance } = require('perf_hooks');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+
+// Solana imports
+let solanaWeb3, bip39, Keypair, PublicKey, derivePath;
+let SOLANA_AVAILABLE = false;
+
+try {
+    solanaWeb3 = require('@solana/web3.js');
+    bip39 = require('bip39');
+    const ed25519 = require('ed25519-hd-key');
+    derivePath = ed25519.derivePath;
+    Keypair = solanaWeb3.Keypair;
+    PublicKey = solanaWeb3.PublicKey;
+    SOLANA_AVAILABLE = true;
+} catch(e) {
+    // Solana modules not installed
+}
 
 // Get CPU info
 const CPU_CORES = os.cpus().length;
@@ -181,10 +200,96 @@ function generateWalletWithMnemonic(wordCount = 12) {
 }
 
 // ============================================
+// SOLANA WALLET FUNCTIONS
+// ============================================
+
+// 1. Generate Solana wallet (Private Key Only)
+function generateSolanaSingleWallet() {
+    const keypair = Keypair.generate();
+    const privateKeyArray = Array.from(keypair.secretKey);
+    const privateKeyBase58 = bs58Encode(keypair.secretKey);
+    
+    return {
+        address: keypair.publicKey.toBase58(),
+        privateKey: privateKeyBase58,
+        privateKeyArray: JSON.stringify(privateKeyArray),
+        mnemonic: null
+    };
+}
+
+// 2. Generate Solana wallet with Mnemonic
+function generateSolanaWalletWithMnemonic(wordCount = 12) {
+    // Generate mnemonic
+    const strength = {
+        12: 128,
+        15: 160,
+        18: 192,
+        21: 224,
+        24: 256
+    };
+    
+    const mnemonic = bip39.generateMnemonic(strength[wordCount] || 128);
+    const seed = bip39.mnemonicToSeedSync(mnemonic, ""); // Empty passphrase
+    
+    // Use standard Solana derivation path: m/44'/501'/0'/0'
+    const path = "m/44'/501'/0'/0'";
+    const derivedSeed = derivePath(path, seed.toString('hex')).key;
+    
+    // Create keypair from derived seed
+    const keypair = Keypair.fromSeed(derivedSeed);
+    const privateKeyArray = Array.from(keypair.secretKey);
+    const privateKeyBase58 = bs58Encode(keypair.secretKey);
+    
+    return {
+        address: keypair.publicKey.toBase58(),
+        privateKey: privateKeyBase58,
+        privateKeyArray: JSON.stringify(privateKeyArray),
+        mnemonic: mnemonic,
+        wordCount: mnemonic.split(' ').length,
+        path: path
+    };
+}
+
+// Base58 encoding helper for Solana
+function bs58Encode(buffer) {
+    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const BASE = BigInt(58);
+    
+    let num = BigInt('0x' + Buffer.from(buffer).toString('hex'));
+    let encoded = '';
+    
+    while (num > 0) {
+        const remainder = num % BASE;
+        num = num / BASE;
+        encoded = ALPHABET[Number(remainder)] + encoded;
+    }
+    
+    // Add leading zeros
+    for (let i = 0; i < buffer.length && buffer[i] === 0; i++) {
+        encoded = ALPHABET[0] + encoded;
+    }
+    
+    return encoded;
+}
+
+// Check vanity Solana address
+function checkSolanaVanity(address, prefix = null, suffix = null) {
+    if (prefix && suffix) {
+        return address.startsWith(prefix) && address.endsWith(suffix);
+    } else if (prefix) {
+        return address.startsWith(prefix);
+    } else if (suffix) {
+        return address.endsWith(suffix);
+    }
+    return false;
+}
+
+// ============================================
 // 2. GENERATE BULK WALLETS (with streaming for large batches)
 // ============================================
-function generateBulkWallets(count, showDetails = true, withMnemonic = false, wordCount = 12) {
-    const walletType = withMnemonic ? `wallets with ${wordCount}-word mnemonic` : 'wallets (private key only)';
+function generateBulkWallets(count, showDetails = true, withMnemonic = false, wordCount = 12, chain = 'ETH') {
+    const chainName = chain === 'SOL' ? 'Solana' : 'Ethereum';
+    const walletType = withMnemonic ? `${chainName} wallets with ${wordCount}-word mnemonic` : `${chainName} wallets (private key only)`;
     console.log(`\n🔑 Generating ${count} ${walletType}...\n`);
     
     const wallets = [];
@@ -195,9 +300,9 @@ function generateBulkWallets(count, showDetails = true, withMnemonic = false, wo
     let fileStream = null;
     
     if (useStreaming) {
-        const filename = `wallets-${withMnemonic ? 'mnemonic-' : ''}${Date.now()}.txt`;
+        const filename = `wallets-${chain.toLowerCase()}-${withMnemonic ? 'mnemonic-' : ''}${Date.now()}.txt`;
         fileStream = fs.createWriteStream(filename);
-        fileStream.write(`# ETH Wallets Generated\n`);
+        fileStream.write(`# ${chainName} Wallets Generated\n`);
         fileStream.write(`# Type: ${walletType}\n`);
         fileStream.write(`# Date: ${new Date().toISOString()}\n`);
         fileStream.write(`# Total: ${count}\n\n`);
@@ -205,7 +310,13 @@ function generateBulkWallets(count, showDetails = true, withMnemonic = false, wo
     }
 
     for (let i = 0; i < count; i++) {
-        const wallet = withMnemonic ? generateWalletWithMnemonic(wordCount) : generateSingleWallet();
+        let wallet;
+        
+        if (chain === 'SOL') {
+            wallet = withMnemonic ? generateSolanaWalletWithMnemonic(wordCount) : generateSolanaSingleWallet();
+        } else {
+            wallet = withMnemonic ? generateWalletWithMnemonic(wordCount) : generateSingleWallet();
+        }
         
         if (!useStreaming) {
             wallets.push(wallet);
@@ -214,6 +325,9 @@ function generateBulkWallets(count, showDetails = true, withMnemonic = false, wo
             fileStream.write(`Wallet ${i + 1}\n`);
             fileStream.write(`Address:     ${wallet.address}\n`);
             fileStream.write(`Private Key: ${wallet.privateKey}\n`);
+            if (chain === 'SOL' && wallet.privateKeyArray) {
+                fileStream.write(`Private Key (Array): ${wallet.privateKeyArray}\n`);
+            }
             if (wallet.mnemonic) {
                 fileStream.write(`Mnemonic:    ${wallet.mnemonic}\n`);
                 fileStream.write(`Word Count:  ${wallet.wordCount}\n`);
@@ -593,7 +707,10 @@ async function generateVanityWalletMultiThread(prefix = null, suffix = null, thr
 // 6. SAVE TO FILE
 // ============================================
 function saveToFile(wallets, filename = 'wallets.txt') {
-    let content = '# ETH Wallets Generated\n';
+    const isSolana = wallets[0]?.privateKeyArray !== undefined;
+    const chainName = isSolana ? 'Solana' : 'Ethereum';
+    
+    let content = `# ${chainName} Wallets Generated\n`;
     content += `# Date: ${new Date().toISOString()}\n`;
     content += `# Total: ${wallets.length}\n`;
     content += `# Type: ${wallets[0]?.mnemonic ? 'Mnemonic Phrase' : 'Private Key Only'}\n\n`;
@@ -602,6 +719,9 @@ function saveToFile(wallets, filename = 'wallets.txt') {
         content += `Wallet ${index + 1}\n`;
         content += `Address:     ${wallet.address}\n`;
         content += `Private Key: ${wallet.privateKey}\n`;
+        if (isSolana && wallet.privateKeyArray) {
+            content += `Private Key (Array): ${wallet.privateKeyArray}\n`;
+        }
         if (wallet.mnemonic) {
             content += `Mnemonic:    ${wallet.mnemonic}\n`;
             content += `Word Count:  ${wallet.wordCount}\n`;
@@ -621,19 +741,32 @@ function saveToFile(wallets, filename = 'wallets.txt') {
 // ============================================
 function saveToCSV(wallets, filename = 'wallets.csv') {
     const hasMnemonic = wallets[0]?.mnemonic !== null && wallets[0]?.mnemonic !== undefined;
+    const isSolana = wallets[0]?.privateKeyArray !== undefined;
     
     let content = hasMnemonic 
-        ? 'Index,Address,Private Key,Mnemonic,Word Count,Derivation Path\n'
-        : 'Index,Address,Private Key\n';
+        ? (isSolana 
+            ? 'Index,Address,Private Key (Base58),Private Key (Array),Mnemonic,Word Count,Derivation Path\n'
+            : 'Index,Address,Private Key,Mnemonic,Word Count,Derivation Path\n')
+        : (isSolana
+            ? 'Index,Address,Private Key (Base58),Private Key (Array)\n'
+            : 'Index,Address,Private Key\n');
 
     wallets.forEach((wallet, index) => {
         if (hasMnemonic) {
             const mnemonic = wallet.mnemonic || 'N/A';
             const wordCount = wallet.wordCount || 'N/A';
             const path = wallet.path || 'N/A';
-            content += `${index + 1},${wallet.address},${wallet.privateKey},"${mnemonic}",${wordCount},"${path}"\n`;
+            if (isSolana) {
+                content += `${index + 1},${wallet.address},${wallet.privateKey},"${wallet.privateKeyArray}","${mnemonic}",${wordCount},"${path}"\n`;
+            } else {
+                content += `${index + 1},${wallet.address},${wallet.privateKey},"${mnemonic}",${wordCount},"${path}"\n`;
+            }
         } else {
-            content += `${index + 1},${wallet.address},${wallet.privateKey}\n`;
+            if (isSolana) {
+                content += `${index + 1},${wallet.address},${wallet.privateKey},"${wallet.privateKeyArray}"\n`;
+            } else {
+                content += `${index + 1},${wallet.address},${wallet.privateKey}\n`;
+            }
         }
     });
 
@@ -646,10 +779,12 @@ function saveToCSV(wallets, filename = 'wallets.csv') {
 // ============================================
 function saveToJSON(wallets, filename = 'wallets.json') {
     const hasMnemonic = wallets[0]?.mnemonic !== null && wallets[0]?.mnemonic !== undefined;
+    const isSolana = wallets[0]?.privateKeyArray !== undefined;
     
     const data = {
         generated: new Date().toISOString(),
         total: wallets.length,
+        chain: isSolana ? 'Solana' : 'Ethereum',
         type: hasMnemonic ? 'mnemonic' : 'privatekey',
         wallets: wallets.map((w, i) => {
             const wallet = {
@@ -657,6 +792,10 @@ function saveToJSON(wallets, filename = 'wallets.json') {
                 address: w.address,
                 privateKey: w.privateKey
             };
+            
+            if (isSolana && w.privateKeyArray) {
+                wallet.privateKeyArray = w.privateKeyArray;
+            }
             
             if (hasMnemonic && w.mnemonic) {
                 wallet.mnemonic = w.mnemonic;
@@ -677,9 +816,9 @@ function saveToJSON(wallets, filename = 'wallets.json') {
 }
 
 // ============================================
-// INTERACTIVE MENU
+// ETHEREUM WALLET MENU
 // ============================================
-async function showMenu() {
+async function showETHMenu() {
     const readline = require('readline');
     const rl = readline.createInterface({
         input: process.stdin,
@@ -689,7 +828,7 @@ async function showMenu() {
     const question = (query) => new Promise(resolve => rl.question(query, resolve));
 
     console.log('\n' + '='.repeat(65));
-    console.log('🔷 ETH WALLET GENERATOR - PROFESSIONAL EDITION');
+    console.log('🔷 ETHEREUM WALLET GENERATOR');
     console.log('='.repeat(65));
     console.log(`💻 CPU: ${CPU_CORES} cores detected`);
     console.log('='.repeat(65));
@@ -707,7 +846,7 @@ async function showMenu() {
     console.log('');
     console.log('UTILITIES:');
     console.log('7.  Benchmark speed test');
-    console.log('0.  Exit');
+    console.log('0.  Back to main menu');
     console.log('='.repeat(65));
 
     const choice = await question('\nChoose option (0-7): ');
@@ -745,7 +884,7 @@ async function showMenu() {
                 console.log('💡 Using streaming mode to prevent memory issues');
             }
             
-            const wallets1 = generateBulkWallets(numCount1, showDetails1, true, wordCount);
+            const wallets1 = generateBulkWallets(numCount1, showDetails1, true, wordCount, 'ETH');
             
             if (numCount1 <= 10000) {
                 const saveChoice1 = await question('Save to file? (1=txt, 2=csv, 3=json, n=no): ');
@@ -782,7 +921,7 @@ async function showMenu() {
                 console.log('💡 Using streaming mode to prevent memory issues');
             }
             
-            const wallets2 = generateBulkWallets(numCount2, showDetails2, false);
+            const wallets2 = generateBulkWallets(numCount2, showDetails2, false, 12, 'ETH');
             
             if (numCount2 <= 10000) {
                 const saveChoice2 = await question('Save to file? (1=txt, 2=csv, 3=json, n=no): ');
@@ -919,9 +1058,9 @@ async function showMenu() {
             break;
 
         case '7':
-            console.log('\n🏎️  Benchmark: Generating 1000 wallets...');
+            console.log('\n🏎️  Benchmark: Generating 1000 Ethereum wallets...');
             const benchStart = performance.now();
-            generateBulkWallets(1000, false, false);
+            generateBulkWallets(1000, false, false, 12, 'ETH');
             const benchTime = (performance.now() - benchStart) / 1000;
             const benchSpeed = 1000 / benchTime;
             
@@ -939,9 +1078,8 @@ async function showMenu() {
             break;
 
         case '0':
-            console.log('\n👋 Goodbye!\n');
             rl.close();
-            return;
+            return 'BACK';
 
         default:
             console.log('❌ Invalid choice');
@@ -954,16 +1092,230 @@ async function showMenu() {
             input: process.stdin,
             output: process.stdout
         });
-        rl2.question('\nRun again? (y/n): ', (answer) => {
+        rl2.question('\nContinue with Ethereum? (y/n): ', (answer) => {
             rl2.close();
             resolve(answer);
         });
     });
 
     if (again.toLowerCase() === 'y') {
-        await showMenu();
+        return await showETHMenu();
     } else {
-        console.log('\n👋 Goodbye! Stay safe!\n');
+        return 'BACK';
+    }
+}
+
+// ============================================
+// SOLANA WALLET MENU
+// ============================================
+async function showSOLMenu() {
+    const readline = require('readline');
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    const question = (query) => new Promise(resolve => rl.question(query, resolve));
+
+    console.log('\n' + '='.repeat(65));
+    console.log('☀️  SOLANA WALLET GENERATOR');
+    console.log('='.repeat(65));
+    console.log(`💻 CPU: ${CPU_CORES} cores detected`);
+    console.log('='.repeat(65));
+    console.log('WALLET GENERATION:');
+    console.log('1.  Generate wallets with MNEMONIC PHRASE (12/15/18/21/24 words)');
+    console.log('    → Address + Private Key (Base58 & Array) + Mnemonic');
+    console.log('2.  Generate wallets with PRIVATE KEY ONLY');
+    console.log('    → Address + Private Key (Base58 & Array)');
+    console.log('');
+    console.log('UTILITIES:');
+    console.log('3.  Benchmark speed test');
+    console.log('0.  Back to main menu');
+    console.log('='.repeat(65));
+
+    const choice = await question('\nChoose option (0-3): ');
+
+    switch(choice.trim()) {
+        case '1':
+            console.log('\n📝 Generate Solana wallets with MNEMONIC PHRASE');
+            console.log('   Supported word counts: 12, 15, 18, 21, 24');
+            console.log('   Standard is 12 words (recommended)\n');
+            
+            const wordCountInput = await question('Word count (12/15/18/21/24, default=12): ');
+            const wordCount = wordCountInput.trim() === '' ? 12 : parseInt(wordCountInput);
+            
+            if (![12, 15, 18, 21, 24].includes(wordCount)) {
+                console.log('\n❌ Invalid word count! Must be 12, 15, 18, 21, or 24\n');
+                break;
+            }
+            
+            const count1 = await question('How many wallets? ');
+            const validation1 = validateBulkCount(count1);
+            
+            if (!validation1.valid) {
+                console.log(`\n❌ ${validation1.error}\n`);
+                break;
+            }
+            
+            const numCount1 = validation1.value;
+            const showDetails1 = numCount1 <= 20;
+            
+            if (numCount1 > 20) {
+                console.log('\n💡 Using animated progress bar (details hidden for large batches)');
+            }
+            
+            if (numCount1 > 10000) {
+                console.log('💡 Using streaming mode to prevent memory issues');
+            }
+            
+            const wallets1 = generateBulkWallets(numCount1, showDetails1, true, wordCount, 'SOL');
+            
+            if (numCount1 <= 10000) {
+                const saveChoice1 = await question('Save to file? (1=txt, 2=csv, 3=json, n=no): ');
+                if (saveChoice1 === '1') {
+                    saveToFile(wallets1, `wallets-solana-mnemonic-${wordCount}words.txt`);
+                } else if (saveChoice1 === '2') {
+                    saveToCSV(wallets1, `wallets-solana-mnemonic-${wordCount}words.csv`);
+                } else if (saveChoice1 === '3') {
+                    saveToJSON(wallets1, `wallets-solana-mnemonic-${wordCount}words.json`);
+                }
+            }
+            break;
+
+        case '2':
+            console.log('\n🔑 Generate Solana wallets with PRIVATE KEY ONLY');
+            console.log('   No mnemonic phrase (cannot be recovered from seed)\n');
+            
+            const count2 = await question('How many wallets? ');
+            const validation2 = validateBulkCount(count2);
+            
+            if (!validation2.valid) {
+                console.log(`\n❌ ${validation2.error}\n`);
+                break;
+            }
+            
+            const numCount2 = validation2.value;
+            const showDetails2 = numCount2 <= 20;
+            
+            if (numCount2 > 20) {
+                console.log('\n💡 Using animated progress bar (details hidden for large batches)');
+            }
+            
+            if (numCount2 > 10000) {
+                console.log('💡 Using streaming mode to prevent memory issues');
+            }
+            
+            const wallets2 = generateBulkWallets(numCount2, showDetails2, false, 12, 'SOL');
+            
+            if (numCount2 <= 10000) {
+                const saveChoice2 = await question('Save to file? (1=txt, 2=csv, 3=json, n=no): ');
+                if (saveChoice2 === '1') {
+                    saveToFile(wallets2, 'wallets-solana-privatekey.txt');
+                } else if (saveChoice2 === '2') {
+                    saveToCSV(wallets2, 'wallets-solana-privatekey.csv');
+                } else if (saveChoice2 === '3') {
+                    saveToJSON(wallets2, 'wallets-solana-privatekey.json');
+                }
+            }
+            break;
+
+        case '3':
+            console.log('\n🏎️  Benchmark: Generating 1000 Solana wallets...');
+            const benchStart = performance.now();
+            generateBulkWallets(1000, false, false, 12, 'SOL');
+            const benchTime = (performance.now() - benchStart) / 1000;
+            const benchSpeed = 1000 / benchTime;
+            
+            console.log(`\n📊 Benchmark Results:`);
+            console.log(`   Speed: ${benchSpeed.toFixed(2)} wallets/second`);
+            console.log(`   CPU: ${CPU_CORES} cores`);
+            console.log(`   Time per wallet: ${(benchTime/1000*1000).toFixed(2)}ms`);
+            break;
+
+        case '0':
+            rl.close();
+            return 'BACK';
+
+        default:
+            console.log('❌ Invalid choice');
+    }
+
+    rl.close();
+    
+    const again = await new Promise(resolve => {
+        const rl2 = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+        rl2.question('\nContinue with Solana? (y/n): ', (answer) => {
+            rl2.close();
+            resolve(answer);
+        });
+    });
+
+    if (again.toLowerCase() === 'y') {
+        return await showSOLMenu();
+    } else {
+        return 'BACK';
+    }
+}
+
+// ============================================
+// MAIN MENU - CHAIN SELECTION
+// ============================================
+async function showMainMenu() {
+    const readline = require('readline');
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    const question = (query) => new Promise(resolve => rl.question(query, resolve));
+
+    console.log('\n' + '='.repeat(65));
+    console.log('🌟 MULTI-CHAIN WALLET GENERATOR - PROFESSIONAL EDITION');
+    console.log('='.repeat(65));
+    console.log(`💻 CPU: ${CPU_CORES} cores detected`);
+    console.log(`🔗 Chains: Ethereum ${SOLANA_AVAILABLE ? '+ Solana ✅' : '(Solana modules not installed ❌)'}`);
+    console.log('='.repeat(65));
+    console.log('SELECT BLOCKCHAIN:');
+    console.log('1.  Ethereum (ETH) Wallet Generator');
+    console.log('    → EVM compatible addresses');
+    if (SOLANA_AVAILABLE) {
+        console.log('2.  Solana (SOL) Wallet Generator');
+        console.log('    → Base58 addresses');
+    } else {
+        console.log('2.  Solana (SOL) - NOT AVAILABLE');
+        console.log('    → Install: npm install @solana/web3.js bip39 ed25519-hd-key');
+    }
+    console.log('0.  Exit');
+    console.log('='.repeat(65));
+
+    const choice = await question(`\nChoose blockchain (0-${SOLANA_AVAILABLE ? '2' : '1'}): `);
+
+    rl.close();
+
+    if (choice.trim() === '1') {
+        const result = await showETHMenu();
+        if (result === 'BACK') {
+            return await showMainMenu();
+        }
+    } else if (choice.trim() === '2' && SOLANA_AVAILABLE) {
+        const result = await showSOLMenu();
+        if (result === 'BACK') {
+            return await showMainMenu();
+        }
+    } else if (choice.trim() === '2' && !SOLANA_AVAILABLE) {
+        console.log('\n❌ Solana modules not installed!');
+        console.log('📦 Install with:');
+        console.log('   npm install @solana/web3.js bip39 ed25519-hd-key\n');
+        return await showMainMenu();
+    } else if (choice.trim() === '0') {
+        console.log('\n👋 Goodbye!\n');
+        return;
+    } else {
+        console.log('❌ Invalid choice');
+        return await showMainMenu();
     }
 }
 
@@ -979,16 +1331,23 @@ if (require.main === module) {
         process.exit(1);
     }
 
-    console.log('\n🔷 ETH Wallet Generator - Professional Edition');
+    console.log('\n🌟 Multi-Chain Wallet Generator - Professional Edition');
     console.log(`💻 Detected: ${CPU_CORES} CPU cores`);
     console.log(`⚡ Ready for high-speed generation!\n`);
 
-    showMenu().catch(console.error);
+    showMainMenu().catch(console.error);
 }
 
 module.exports = {
+    // Ethereum functions
     generateSingleWallet,
     generateWalletWithMnemonic,
+    
+    // Solana functions
+    generateSolanaSingleWallet,
+    generateSolanaWalletWithMnemonic,
+    
+    // Common functions
     generateBulkWallets,
     generateVanityWallet,
     generateVanityWalletMultiThread,
